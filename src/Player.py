@@ -31,3 +31,6 @@ class Player:
         return "{}: {} ({:.1f}%) - {} ({:.1f}%) - {} ({:.1f}%)".format(
             self.name, self.wins, win_perc, self.losses, loss_perc, self.draws,
             draw_perc)
+
+    def quit(self):
+        pass
