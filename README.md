@@ -1,6 +1,5 @@
 # The-Gambit
-A chess engine based on RL of a DNN
-- Development in progress
+Building a chess engine to learn TensorFlow/Keras 
 
 ## Current Status
 ### Player
