@@ -3,14 +3,8 @@ import numpy as np
 
 
 class Player:
-    def __init__(self,
-                 is_white=True,
-                 name='Player',
-                 wins=0,
-                 losses=0,
-                 draws=0):
+    def __init__(self, name='Player', wins=0, losses=0, draws=0):
         self.name = name
-        self.is_white = is_white
         self.wins = wins
         self.losses = losses
         self.draws = draws

@@ -3,13 +3,8 @@ import chess
 
 
 class Human(Player):
-    def __init__(self, is_white=True, name='Human', wins=0, losses=0, draws=0):
-        Player.__init__(self,
-                        is_white=is_white,
-                        name=name,
-                        wins=wins,
-                        losses=losses,
-                        draws=draws)
+    def __init__(self, name='Human', wins=0, losses=0, draws=0):
+        Player.__init__(self, name=name, wins=wins, losses=losses, draws=draws)
 
     def next_move(self, board):
         prompt = self.get_move_prompt(board)

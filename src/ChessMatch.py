@@ -62,9 +62,10 @@ class ChessMatch:
             self.players[1].draws += 1
 
     def player_stats(self):
-        print("win (%) - loss (%) - draws (%)")
+        print("\nname: win (%) - loss (%) - draws (%)")
         for player in self.players:
             print(player.get_stats())
+        print()
 
     def quit(self):
         for player in self.players:
