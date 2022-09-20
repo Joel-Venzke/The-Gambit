@@ -13,6 +13,8 @@ class Player:
         return self.name
 
     def next_move(self, board):
+        print('In Player')
+        print(board.fen())
         moves = list(board.legal_moves)
         move_idx = np.random.randint(len(moves))
         return moves[move_idx]

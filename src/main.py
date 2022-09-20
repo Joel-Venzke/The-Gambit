@@ -9,9 +9,9 @@ player_2 = Player(name='Player 2')
 human = Human()
 stockfish = StockfishPlayer()
 
-num_games = 5
+num_games = 100
 for depth in range(1):
-    chess_match = ChessMatch(player_1, Stockfish, verbose=2)
+    chess_match = ChessMatch(player_1, stockfish, verbose=1)
     chess_match.randomize_sides()
     start = time.time()
     for idx in range(num_games):

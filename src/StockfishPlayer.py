@@ -1,29 +1,23 @@
 from Player import Player
-from stockfish import Stockfish
 import chess
 import chess.engine
 
 
 class StockfishPlayer(Player):
-    def __init__(
-            self,
-            name='Stockfish',
-            wins=0,
-            losses=0,
-            draws=0,
-            engine_path="/Users/joelvenzke/Repos/The-Gambit/venv/lib/python3.7/site-packages/stockfish/models.py",
-            time=None,
-            depth=None):
+    def __init__(self,
+                 is_white=True,
+                 name='Stockfish',
+                 wins=0,
+                 losses=0,
+                 draws=0,
+                 engine_path="/usr/local/Cellar/stockfish/15/bin/stockfish",
+                 time=0.01):
         Player.__init__(self, name=name, wins=wins, losses=losses, draws=draws)
-        self.engine = Stockfish()
-        # self.depth = depth
-        # self.time = time
+        self.engine = chess.engine.SimpleEngine.popen_uci(engine_path)
+        self.time = time
 
     def next_move(self, board):
-        print(board)
-        exit()
-        result = self.engine.play(
-            board, chess.engine.Limit(time=self.time, depth=self.depth))
+        result = self.engine.play(board, chess.engine.Limit(time=self.time))
         return result.move
 
     def quit(self):
