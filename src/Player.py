@@ -8,13 +8,12 @@ class Player:
         self.wins = wins
         self.losses = losses
         self.draws = draws
+        self.training = False
 
     def __str__(self):
         return self.name
 
     def next_move(self, board):
-        print('In Player')
-        print(board.fen())
         moves = list(board.legal_moves)
         move_idx = np.random.randint(len(moves))
         return moves[move_idx]
