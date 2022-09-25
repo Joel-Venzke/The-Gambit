@@ -6,6 +6,7 @@ import chess.svg
 class ChessMatch:
     def __init__(self, player_1, player_2, training_batch_size=32, verbose=2):
         self.board = chess.Board()
+        self.players_fixed_order = [player_1, player_2]
         self.players = [player_1, player_2]
         self.num_training = player_1.training + player_2.training
         self.verbose = verbose
@@ -17,6 +18,7 @@ class ChessMatch:
         return str(self.board)
 
     def reset_training_set(self):
+        self.non_draw_game = 0
         self.training_set = []
 
     def randomize_sides(self):
@@ -42,16 +44,15 @@ class ChessMatch:
             # make move
             move = self.players[move_idx % 2].next_move(self.board)
             self.board.push(move)
-            if self.verbose == 2:
-                if move_idx % 2 == 0:
-                    print(f'{move_idx//2 + 1}.{move}', end='')
-                else:
-                    print(f',{move} ', end='')
+            if self.verbose == 2 or (self.verbose == 1 and self.game_counter %
+                                     self.training_batch_size == 0):
+                print(self.board.fen())
             if self.verbose >= 3:
                 print(self)
             move_idx += 1
         # print result
-        if self.verbose == 2:
+        if self.verbose == 2 or (self.verbose == 1 and self.game_counter %
+                                 self.training_batch_size == 0):
             print()
         self.report_result(move_idx)
         if self.game_counter % self.training_batch_size == 0:
@@ -87,19 +88,37 @@ class ChessMatch:
         self.gen_training_data()
 
     def gen_training_data(self):
-        for board in self.game_log:
-            self.training_set.append([board, self.training_result])
+        save_game = False
+        if self.training_result == 1.0 or self.training_result == 0.0:
+            save_game = True
+            self.non_draw_game += 1
+        elif self.training_result == 0.5 and self.non_draw_game > 0:
+            self.non_draw_game -= 1
+            save_game = True
+        if save_game:
+            num_moves = len(self.game_log)
+            for move_idx, board in enumerate(self.game_log):
+                # scale board rating by closeness to end of game
+                self.training_set.append([
+                    board, self.training_result -
+                    ((self.training_result - 0.5) *
+                     (num_moves - move_idx - 1) / num_moves)
+                ])
 
     def run_training(self):
-        if self.num_training == 1:
-            for player in self.players:
-                if player.training:
-                    player.fit_games(self.training_set,
-                                     self.training_batch_size)
-        if self.num_training == 2:
-            self.players[(self.game_counter // self.training_batch_size) %
-                         2].fit_games(self.training_set,
-                                      self.training_batch_size)
+        if len(self.training_set) > 0:
+            if self.num_training == 1:
+                self.player_stats()
+                for player in self.players:
+                    if player.training:
+                        player.fit_games(self.training_set,
+                                         self.training_batch_size)
+            if self.num_training == 2:
+                self.player_stats()
+                self.players_fixed_order[(
+                    (self.game_counter // self.training_batch_size) + 1) %
+                                         2].fit_games(self.training_set,
+                                                      self.training_batch_size)
         self.reset_training_set()
 
     def player_stats(self):

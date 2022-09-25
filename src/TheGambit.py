@@ -6,17 +6,29 @@ from keras.utils import plot_model
 from keras.optimizers import Adam
 import numpy as np
 import chess
+import glob
 
 
 class TheGambit(Player):
-    def __init__(self, name='TheGambit', wins=0, losses=0, draws=0):
+    def __init__(self,
+                 name='TheGambit',
+                 wins=0,
+                 losses=0,
+                 draws=0,
+                 load_model=False,
+                 noise_level=0.05,
+                 min_noise_level=1e-3):
         Player.__init__(self, name=name, wins=wins, losses=losses, draws=draws)
+        self.noise_level = noise_level
+        self.min_noise_level = min_noise_level
+        self.games_per_version = 32
+        self.load_model = load_model
         self.model = self.get_model()
         self.color = True
         self.min_max_func = np.argmax
         self.training = True
-        self.noise_level = 0.2
         self.setup_training_data()
+        self.model_version = 0
 
     def setup_training_data(self):
         board = chess.Board()
@@ -44,21 +56,41 @@ class TheGambit(Player):
             self.min_max_func = np.argmin
 
     def get_model(self):
+        if self.load_model:
+            model_paths = glob.glob(f'models/{self.name}_v*')
+            if len(model_paths) > 0:
+                newest_model_path = ''
+                newest_model_version = -1
+                for path in model_paths:
+                    version = int(path.strip().split('_v')[-1])
+                    if version > newest_model_version:
+                        newest_model_path = path
+                        newest_model_version = version
+                print('loading:', newest_model_path)
+                self.model_version = newest_model_version + 1
+                for idx in range(self.model_version):
+                    self.adjust_noise_level(self.games_per_version)
+                print(self.noise_level)
+                return keras.models.load_model(path)
+            else:
+                print('No save models found. Starting from scratch')
+
+        # create model from scratch
         max_chess_piece_idx = 12
         embedding_size = 4
-        cnn_filter_power = 2
+        cnn_filter_power = 3
         cnn_filter_shape = (3, 3)
         activation = "elu"
-        dense_power = 3
+        dense_power = 5
         cnn_stack_size = 3
-        mlp_stack_size = 4
+        mlp_stack_size = 3
         dropout_rate = 0.1
 
         # input for the 64 square chess board (embedding)
         board_input = Input(shape=[8, 8], name='board_input')
         # input for
         state_input = Input(shape=[
-            5,
+            6,
         ], name='state_input')
 
         flat_board = Flatten(name='flat_board')(board_input)
@@ -85,8 +117,13 @@ class TheGambit(Player):
 
         model = Model(inputs=[board_input, state_input], outputs=output)
         model.compile(optimizer=Adam(learning_rate=1e-4), loss='mse')
-
+        model.summary()
         return model
+
+    def save_model(self):
+        path = f'models/{self.name}_v{self.model_version}'
+        self.model.save(path)
+        self.model_version += 1
 
     def board_to_grid(self, board):
         np_board = np.zeros((8, 8), dtype=int)
@@ -103,12 +140,13 @@ class TheGambit(Player):
         return np_board
 
     def get_board_stats(self, board):
-        stats = np.zeros([5], dtype=float)
+        stats = np.zeros([6], dtype=float)
         stats[0] = board.has_kingside_castling_rights(chess.WHITE)
         stats[1] = board.has_queenside_castling_rights(chess.WHITE)
         stats[2] = board.has_kingside_castling_rights(chess.BLACK)
         stats[3] = board.has_queenside_castling_rights(chess.BLACK)
         stats[4] = board.halfmove_clock / 50
+        stats[4] = int(board.turn)
         return stats
 
     def board_to_training(self, board):
@@ -141,6 +179,12 @@ class TheGambit(Player):
         string += "\n"
         return string
 
+    def adjust_noise_level(self, num_games):
+        num_base_games = 512
+        self.noise_level *= max(0.1,
+                                (num_base_games - num_games) / num_base_games)
+        self.noise_level = max(self.noise_level, self.min_noise_level)
+
     def fit_games(self, training_set, num_games):
         num_boards = len(training_set)
         print(
@@ -156,7 +200,6 @@ class TheGambit(Player):
             x_train_stats.append(stats)
             y_train.append(float(label))
             counter += 1
-
         # x_train_grid = x_train_grid)
         # x_train_stats = np.array(x_train_stats)
         self.model.fit([np.array(x_train_grid),
@@ -167,5 +210,7 @@ class TheGambit(Player):
                        epochs=8)
         self.x_val = [np.array(x_train_grid), np.array(x_train_stats)]
         self.y_val = np.array(y_train)
-        self.noise_level /= 1.5
+        self.save_model()
+        # 10x smaller per 2**10 games
+        self.adjust_noise_level(num_games)
         print('Noise level:', self.noise_level)
