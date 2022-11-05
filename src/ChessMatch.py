@@ -99,11 +99,12 @@ class ChessMatch:
             num_moves = len(self.game_log)
             for move_idx, board in enumerate(self.game_log):
                 # scale board rating by closeness to end of game
-                self.training_set.append([
-                    board, self.training_result -
-                    ((self.training_result - 0.5) *
-                     (num_moves - move_idx - 1) / num_moves)
-                ])
+                # self.training_set.append([
+                #     board, self.training_result -
+                #     ((self.training_result - 0.5) *
+                #      (num_moves - move_idx - 1) / num_moves)
+                # ])
+                self.training_set.append([board, self.training_result])
 
     def run_training(self):
         if len(self.training_set) > 0:

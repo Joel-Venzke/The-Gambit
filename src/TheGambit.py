@@ -4,6 +4,7 @@ from keras.layers import Input, Dense, Embedding, Flatten, Reshape, concatenate,
 from keras.models import Model
 from keras.utils import plot_model
 from keras.optimizers import Adam
+import matplotlib.pyplot as plt
 import numpy as np
 import chess
 import glob
@@ -29,6 +30,11 @@ class TheGambit(Player):
         self.training = True
         self.setup_training_data()
         self.model_version = 0
+        self.total_games_trained = 0
+        self.next_save_count = 2**10
+        self.val_mae = []
+        self.train_mae = []
+        self.moves_per_game = []
 
     def setup_training_data(self):
         board = chess.Board()
@@ -78,13 +84,13 @@ class TheGambit(Player):
         # create model from scratch
         max_chess_piece_idx = 12
         embedding_size = 4
-        cnn_filter_power = 3
+        cnn_filter_power = 5
         cnn_filter_shape = (3, 3)
         activation = "elu"
-        dense_power = 5
+        dense_power = 6
         cnn_stack_size = 3
         mlp_stack_size = 3
-        dropout_rate = 0.1
+        dropout_rate = 0.2
 
         # input for the 64 square chess board (embedding)
         board_input = Input(shape=[8, 8], name='board_input')
@@ -116,7 +122,7 @@ class TheGambit(Player):
         output = Dense(1, activation="sigmoid", name=f'output')(elu_stack)
 
         model = Model(inputs=[board_input, state_input], outputs=output)
-        model.compile(optimizer=Adam(learning_rate=1e-4), loss='mse')
+        model.compile(optimizer=Adam(learning_rate=2e-4), loss='mae')
         model.summary()
         return model
 
@@ -187,9 +193,11 @@ class TheGambit(Player):
 
     def fit_games(self, training_set, num_games):
         num_boards = len(training_set)
+        self.total_games_trained += num_games
         print(
             f'{self.name} is training on {num_boards} boards ({num_boards/num_games/2} moves per game)'
         )
+
         x_train_grid = []
         x_train_stats = []
         y_train = []
@@ -200,17 +208,60 @@ class TheGambit(Player):
             x_train_stats.append(stats)
             y_train.append(float(label))
             counter += 1
-        # x_train_grid = x_train_grid)
-        # x_train_stats = np.array(x_train_stats)
-        self.model.fit([np.array(x_train_grid),
-                        np.array(x_train_stats)],
-                       np.array(y_train),
+        y_train = np.array(y_train)
+        x_train = [np.array(x_train_grid), np.array(x_train_stats)]
+
+        # guess average
+        pred_val = y_train.mean()
+        mae = np.mean(np.abs(y_train - pred_val))
+        mae_val = np.mean(np.abs(self.y_val - pred_val))
+        print(f'Naive MAE: {mae:.4f} (val: {mae_val:.4f})')
+
+        # train model
+        self.model.fit(x_train,
+                       y_train,
                        validation_data=(self.x_val, self.y_val),
-                       batch_size=512,
+                       batch_size=1024,
                        epochs=8)
+
+        # log training history
+        pred_val = self.model.predict(x_train)
+        mae = np.sqrt(np.mean((y_train - pred_val)**2))
+        pred_val = self.model.predict(self.x_val)
+        mae_val = np.sqrt(np.mean((self.y_val - pred_val)**2))
+        print(f'train mae: {mae}\nval mae: {mae_val}')
+        self.train_mae.append(mae)
+        self.val_mae.append(mae_val)
+        self.moves_per_game.append(num_boards / num_games / 2)
+
+        plt.plot(range(1,
+                       len(self.train_mae[1:]) + 1),
+                 self.train_mae[1:],
+                 label='Training')
+        plt.plot(range(len(self.val_mae[1:])),
+                 self.val_mae[1:],
+                 label='Validation')
+        plt.legend()
+        plt.xlabel('trainings')
+        plt.ylabel('MAE')
+        plt.savefig(f'graphs/{self.name}_training_mae.png')
+        plt.clf()
+
+        plt.plot(self.moves_per_game[1:])
+        plt.xlabel('trainings')
+        plt.ylabel('Moves per game')
+        plt.savefig(f'graphs/{self.name}_moves_per_game.png')
+        plt.clf()
+
+        # update validation
         self.x_val = [np.array(x_train_grid), np.array(x_train_stats)]
-        self.y_val = np.array(y_train)
-        self.save_model()
-        # 10x smaller per 2**10 games
+        self.y_val = y_train
+
+        # save model
+        if self.total_games_trained > self.next_save_count:
+            self.next_save_count += 2**10
+            self.save_model()
+
+        # reduce noise
         self.adjust_noise_level(num_games)
         print('Noise level:', self.noise_level)
