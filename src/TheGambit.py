@@ -4,10 +4,53 @@ from keras.layers import Input, Dense, Embedding, Flatten, Reshape, concatenate,
 from keras.models import Model
 from keras.utils import plot_model
 from keras.optimizers import Adam
+from keras.callbacks import EarlyStopping
+from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import chess
 import glob
+
+
+class BoardLoader(keras.utils.Sequence):
+    def __init__(self, fen_list, labels, batch_size, base_file_path):
+        self.fen_list = fen_list
+        self.labels = labels
+        self.batch_size = batch_size
+        self.base_file_path = base_file_path
+
+    def __len__(self):
+        return (np.ceil(len(self.fen_list) / float(self.batch_size))).astype(
+            np.int)
+
+    def board_to_file(self, fen):
+        return fen.replace('/', '_')
+
+    def get_board_data_files(self, fen):
+        grid_file = f'{self.base_file_path}{self.board_to_file(fen)}_grid.npy'
+        stats_file = f'{self.base_file_path}{self.board_to_file(fen)}_stats.npy'
+        return grid_file, stats_file
+
+    def load_board(self, fen):
+        grid_file, stats_file = self.get_board_data_files(fen)
+        grid = np.load(grid_file)
+        stats = np.load(stats_file)
+        return grid, stats
+
+    def __getitem__(self, idx):
+        batch_x = self.fen_list[idx * self.batch_size:(idx + 1) *
+                                self.batch_size]
+        batch_y = self.labels[idx * self.batch_size:(idx + 1) *
+                              self.batch_size]
+        grid_list = []
+        stats_list = []
+        for fen in batch_x:
+            grid, stats = self.load_board(fen)
+            grid_list.append(grid)
+            stats_list.append(stats)
+        data = [np.array(grid_list), np.array(stats_list)], np.array(batch_y)
+        return data
 
 
 class TheGambit(Player):
@@ -17,8 +60,8 @@ class TheGambit(Player):
                  losses=0,
                  draws=0,
                  load_model=False,
-                 noise_level=0.05,
-                 min_noise_level=1e-3):
+                 noise_level=0.00,
+                 min_noise_level=0):
         Player.__init__(self, name=name, wins=wins, losses=losses, draws=draws)
         self.noise_level = noise_level
         self.min_noise_level = min_noise_level
@@ -32,9 +75,12 @@ class TheGambit(Player):
         self.model_version = 0
         self.total_games_trained = 0
         self.next_save_count = 2**10
+        self.batch_size = 1024
         self.val_mae = []
         self.train_mae = []
         self.moves_per_game = []
+        self.data_name = f'train_data/{name}.csv'
+        self.board_data_name = 'boards/'
 
     def setup_training_data(self):
         board = chess.Board()
@@ -47,9 +93,6 @@ class TheGambit(Player):
             board_grid_list.append(grid)
             board_stat_list.append(stats)
             board.pop()
-
-        self.x_val = [np.array(board_grid_list), np.array(board_stat_list)]
-        self.y_val = np.zeros(len(self.x_val[0])) + 0.5
 
     def set_color(self, color):
         """
@@ -96,33 +139,45 @@ class TheGambit(Player):
         board_input = Input(shape=[8, 8], name='board_input')
         # input for
         state_input = Input(shape=[
-            6,
+            5,
         ], name='state_input')
 
         flat_board = Flatten(name='flat_board')(board_input)
         embeddings = Embedding(max_chess_piece_idx + 1,
                                embedding_size,
                                name='embed_board')(flat_board)
-        cnn = Reshape((8, 8, embedding_size), name='cnn_board')(embeddings)
-        for idx in range(cnn_stack_size):
+        cnn_board = Reshape((8, 8, embedding_size),
+                            name='cnn_board')(embeddings)
+        cnn = Conv2D(2**(cnn_filter_power),
+                     cnn_filter_shape,
+                     activation=activation,
+                     name=f'cnn_{0}')(cnn_board)
+        for idx in range(1, cnn_stack_size):
             cnn = Conv2D(2**(cnn_filter_power + idx),
                          cnn_filter_shape,
                          activation=activation,
                          name=f'cnn_{idx}')(cnn)
+        wide_cnn = Conv2D(2**(cnn_filter_power + cnn_stack_size), (8, 8),
+                          activation=activation,
+                          name=f'wide_cnn')(cnn_board)
         flatten_board_cnn = Flatten(name=f'flatten_cnn')(cnn)
+        flatten_board_wide_cnn = Flatten(name=f'flatten_wide_cnn')(wide_cnn)
 
-        elu_stack = concatenate((flatten_board_cnn, state_input),
-                                name='cnn_state_merge')
+        elu_stack = concatenate(
+            (flatten_board_wide_cnn, flatten_board_cnn, state_input),
+            name='cnn_state_merge')
         for idx in range(mlp_stack_size):
-            elu_stack = BatchNormalization(name=f'batch_norm_{idx}')(elu_stack)
             elu_stack = Dense(2**(dense_power + mlp_stack_size - idx - 1),
                               activation=activation,
                               name=f'dense_{idx}')(elu_stack)
+            elu_stack = BatchNormalization(name=f'batch_norm_{idx}')(elu_stack)
             elu_stack = Dropout(dropout_rate, name=f'dropout_{idx}')(elu_stack)
-        output = Dense(1, activation="sigmoid", name=f'output')(elu_stack)
+        post_elu = concatenate((elu_stack, state_input), name='final_merge')
+        output = Dense(1, activation="linear", name=f'output')(post_elu)
 
         model = Model(inputs=[board_input, state_input], outputs=output)
-        model.compile(optimizer=Adam(learning_rate=2e-4), loss='mae')
+        model.compile(optimizer=Adam(learning_rate=1e-5),
+                      loss='mean_squared_error')
         model.summary()
         return model
 
@@ -146,13 +201,12 @@ class TheGambit(Player):
         return np_board
 
     def get_board_stats(self, board):
-        stats = np.zeros([6], dtype=float)
+        stats = np.zeros([5], dtype=float)
         stats[0] = board.has_kingside_castling_rights(chess.WHITE)
         stats[1] = board.has_queenside_castling_rights(chess.WHITE)
         stats[2] = board.has_kingside_castling_rights(chess.BLACK)
         stats[3] = board.has_queenside_castling_rights(chess.BLACK)
         stats[4] = board.halfmove_clock / 50
-        stats[4] = int(board.turn)
         return stats
 
     def board_to_training(self, board):
@@ -191,71 +245,125 @@ class TheGambit(Player):
                                 (num_base_games - num_games) / num_base_games)
         self.noise_level = max(self.noise_level, self.min_noise_level)
 
+    def board_to_file(self, fen):
+        return fen.replace('/', '_')
+
+    def get_board_data_files(self, fen):
+        grid_file = f'{self.board_data_name}{self.board_to_file(fen)}_grid.npy'
+        stats_file = f'{self.board_data_name}{self.board_to_file(fen)}_stats.npy'
+        return grid_file, stats_file
+
+    def save_board(self, board):
+        grid, stats = self.board_to_training(board)
+        grid_file, stats_file = self.get_board_data_files(board.fen())
+        np.save(grid_file, grid)
+        np.save(stats_file, stats)
+
+    def load_board(self, fen):
+        grid_file, stats_file = self.get_board_data_files(fen)
+        grid = np.load(grid_file)
+        stats = np.load(stats_file)
+        return grid, stats
+
     def fit_games(self, training_set, num_games):
         num_boards = len(training_set)
         self.total_games_trained += num_games
-        print(
-            f'{self.name} is training on {num_boards} boards ({num_boards/num_games/2} moves per game)'
-        )
 
-        x_train_grid = []
-        x_train_stats = []
-        y_train = []
-        counter = 0
+        records = []
         for board, label in training_set:
-            grid, stats = self.board_to_training(board)
-            x_train_grid.append(grid)
-            x_train_stats.append(stats)
-            y_train.append(float(label))
-            counter += 1
-        y_train = np.array(y_train)
-        x_train = [np.array(x_train_grid), np.array(x_train_stats)]
+            records.append({'board': board.fen(), 'label': float(label)})
+            self.save_board(board)
+        new_training_df = pd.DataFrame(records)
+        # save new boards to records
+        new_training_df.to_csv(self.data_name,
+                               mode='a',
+                               index=False,
+                               header=False)
+        # load all boards played
+        training_df = pd.read_csv(self.data_name,
+                                  names=new_training_df.columns,
+                                  header=None)
+        print('Total boards in database:', len(training_df))
+        # get average result for all boards
+        training_df = training_df.groupby('board').mean().reset_index()
+        training_df = training_df.sample(min(16384, len(training_df)))
 
-        # guess average
-        pred_val = y_train.mean()
-        mae = np.mean(np.abs(y_train - pred_val))
-        mae_val = np.mean(np.abs(self.y_val - pred_val))
-        print(f'Naive MAE: {mae:.4f} (val: {mae_val:.4f})')
+        print(f'{self.name} is training on {len(training_df)} boards')
+
+        # convert boards in fen to model inputs
+        # records = []
+        # for idx, row in training_df.iterrows():
+        #     grid, stats = self.load_board(board.fen())
+        #     records.append({
+        #         'grid': grid,
+        #         'stats': stats,
+        #         'label': float(label)
+        #     })
+        train_df, val_df = train_test_split(training_df, test_size=0.2)
+        train_set = BoardLoader(np.array(list(train_df['board'].values)),
+                                np.array(list(train_df['label'].values)),
+                                self.batch_size, self.board_data_name)
+
+        val_set = BoardLoader(np.array(list(val_df['board'].values)),
+                              np.array(list(val_df['label'].values)),
+                              self.batch_size, self.board_data_name)
+        # y_train = np.array(list(train_df['label'].values))
+        # x_train = [
+        #     np.array(list(train_df['grid'].values)),
+        #     np.array(list(train_df['stats'].values))
+        # ]
+        # y_val = np.array(list(val_df['label'].values))
+        # x_val = [
+        #     np.array(list(val_df['grid'].values)),
+        #     np.array(list(val_df['stats'].values))
+        # ]
+        # num_samples = len(y_train)
+        # num_draw = np.sum(y_train == 0.5)
+        # sample_weight = np.ones(shape=(len(y_train), ))
+        # sample_weight[y_train == 0.5] = min(
+        #     1,
+        #     max(1, (num_samples - num_draw)) / num_draw / 2)
 
         # train model
-        self.model.fit(x_train,
-                       y_train,
-                       validation_data=(self.x_val, self.y_val),
-                       batch_size=1024,
-                       epochs=8)
+        callbacks = [
+            EarlyStopping(monitor='val_loss',
+                          patience=30,
+                          restore_best_weights=True)
+        ]
+        self.model.fit(train_set,
+                       validation_data=val_set,
+                       batch_size=self.batch_size,
+                       epochs=300,
+                       callbacks=callbacks)
 
         # log training history
-        pred_val = self.model.predict(x_train)
-        mae = np.sqrt(np.mean((y_train - pred_val)**2))
-        pred_val = self.model.predict(self.x_val)
-        mae_val = np.sqrt(np.mean((self.y_val - pred_val)**2))
-        print(f'train mae: {mae}\nval mae: {mae_val}')
-        self.train_mae.append(mae)
-        self.val_mae.append(mae_val)
-        self.moves_per_game.append(num_boards / num_games / 2)
+        # pred_val = self.model.predict(x_train)
+        # mae = np.sqrt(np.mean((y_train - pred_val)**2))
+        # pred_val = self.model.predict(x_val)
+        # mae_val = np.sqrt(np.mean((y_val - pred_val)**2))
+        # print(f'train mae: {mae}\nval mae: {mae_val}')
+        # self.train_mae.append(mae)
+        # self.val_mae.append(mae_val)
+        # self.moves_per_game.append(num_boards / num_games / 2)
 
-        plt.plot(range(1,
-                       len(self.train_mae[1:]) + 1),
-                 self.train_mae[1:],
-                 label='Training')
-        plt.plot(range(len(self.val_mae[1:])),
-                 self.val_mae[1:],
-                 label='Validation')
-        plt.legend()
-        plt.xlabel('trainings')
-        plt.ylabel('MAE')
-        plt.savefig(f'graphs/{self.name}_training_mae.png')
-        plt.clf()
+        # plt.plot(range(1,
+        #                len(self.train_mae[1:]) + 1),
+        #          self.train_mae[1:],
+        #          label='Training')
+        # plt.plot(range(len(self.val_mae[1:])),
+        #          self.val_mae[1:],
+        #          label='Validation')
+        # plt.legend()
+        # plt.xlabel('trainings')
+        # plt.ylabel('MAE')
+        # plt.savefig(f'graphs/{self.name}_training_mae.png')
+        # plt.clf()
 
-        plt.plot(self.moves_per_game[1:])
-        plt.xlabel('trainings')
-        plt.ylabel('Moves per game')
-        plt.savefig(f'graphs/{self.name}_moves_per_game.png')
-        plt.clf()
-
-        # update validation
-        self.x_val = [np.array(x_train_grid), np.array(x_train_stats)]
-        self.y_val = y_train
+        # plt.plot(self.moves_per_game[1:])
+        # plt.xlabel('trainings')
+        # plt.ylabel('Moves per game')
+        # plt.savefig(f'graphs/{self.name}_moves_per_game.png')
+        # plt.clf()
 
         # save model
         if self.total_games_trained > self.next_save_count:

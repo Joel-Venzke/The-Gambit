@@ -1,6 +1,7 @@
 import chess
 import random
 import chess.svg
+import numpy as np
 
 
 class ChessMatch:
@@ -16,6 +17,11 @@ class ChessMatch:
 
     def __str__(self):
         return str(self.board)
+
+    def random_move(self, board):
+        moves = list(board.legal_moves)
+        move_idx = np.random.randint(len(moves))
+        return moves[move_idx]
 
     def reset_training_set(self):
         self.non_draw_game = 0
@@ -35,18 +41,27 @@ class ChessMatch:
         self.game_log = []
 
         # play game
-        while not self.board.is_game_over():
+        while not self.board.is_game_over(claim_draw=True):
             self.game_log.append(self.board.copy(stack=False))
             if self.verbose >= 3:
                 print(
                     self.get_color_from_move(move_idx) + ":",
                     self.players[move_idx % 2], "to move")
             # make move
-            move = self.players[move_idx % 2].next_move(self.board)
-            self.board.push(move)
+            if move_idx < 2 and self.num_training > 0:
+                move = self.random_move(self.board)
+            else:
+                move = self.players[move_idx % 2].next_move(self.board)
             if self.verbose == 2 or (self.verbose == 1 and self.game_counter %
                                      self.training_batch_size == 0):
-                print(self.board.fen())
+                if move_idx == 0:
+                    print()
+                if move_idx % 2 == 0:
+                    print(f"{move_idx//2 + 1}. {self.board.san(move)}", end=' ')
+                else:
+                    print(f"{self.board.san(move)}", end=' ')
+
+            self.board.push(move)
             if self.verbose >= 3:
                 print(self)
             move_idx += 1
@@ -69,10 +84,15 @@ class ChessMatch:
 
     def report_result(self, move_idx):
         result = self.board.result()
-        if self.verbose >= 1:
+        if result == '*':
+            result = '1/2-1/2'
+        if self.verbose == 2 or (self.verbose == 1 and self.game_counter %
+                                 self.training_batch_size == 0):
             print(
                 f"Game {self.game_counter} result: {result} ({self.players[0]}, {self.players[1]}) in {move_idx/2} moves"
             )
+        else:
+            print(f'.', end='', flush=True)
         if result == '1-0':
             self.players[0].wins += 1
             self.players[1].losses += 1
@@ -90,21 +110,11 @@ class ChessMatch:
     def gen_training_data(self):
         save_game = False
         if self.training_result == 1.0 or self.training_result == 0.0:
-            save_game = True
             self.non_draw_game += 1
         elif self.training_result == 0.5 and self.non_draw_game > 0:
             self.non_draw_game -= 1
-            save_game = True
-        if save_game:
-            num_moves = len(self.game_log)
-            for move_idx, board in enumerate(self.game_log):
-                # scale board rating by closeness to end of game
-                # self.training_set.append([
-                #     board, self.training_result -
-                #     ((self.training_result - 0.5) *
-                #      (num_moves - move_idx - 1) / num_moves)
-                # ])
-                self.training_set.append([board, self.training_result])
+        for move_idx, board in enumerate(self.game_log):
+            self.training_set.append([board, self.training_result])
 
     def run_training(self):
         if len(self.training_set) > 0:
