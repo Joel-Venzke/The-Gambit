@@ -18,11 +18,6 @@ class ChessMatch:
     def __str__(self):
         return str(self.board)
 
-    def random_move(self, board):
-        moves = list(board.legal_moves)
-        move_idx = np.random.randint(len(moves))
-        return moves[move_idx]
-
     def reset_training_set(self):
         self.non_draw_game = 0
         self.training_set = []
@@ -48,16 +43,14 @@ class ChessMatch:
                     self.get_color_from_move(move_idx) + ":",
                     self.players[move_idx % 2], "to move")
             # make move
-            if move_idx < 2 and self.num_training > 0:
-                move = self.random_move(self.board)
-            else:
-                move = self.players[move_idx % 2].next_move(self.board)
+            move = self.players[move_idx % 2].next_move(self.board)
             if self.verbose == 2 or (self.verbose == 1 and self.game_counter %
                                      self.training_batch_size == 0):
                 if move_idx == 0:
                     print()
                 if move_idx % 2 == 0:
-                    print(f"{move_idx//2 + 1}. {self.board.san(move)}", end=' ')
+                    print(f"{move_idx//2 + 1}. {self.board.san(move)}",
+                          end=' ')
                 else:
                     print(f"{self.board.san(move)}", end=' ')
 

@@ -76,12 +76,13 @@ class TheGambit(Player):
         self.model_version = 0
         self.total_games_trained = 0
         self.next_save_count = 2**10
-        self.batch_size = 1024
+        self.batch_size = 8192
         self.val_mae = []
         self.train_mae = []
         self.moves_per_game = []
         self.data_name = f'train_data/{name}.csv'
         self.board_data_name = 'boards/'
+        self.random_move_rate = 0.05
 
     def setup_training_data(self):
         board = chess.Board()
@@ -213,7 +214,15 @@ class TheGambit(Player):
     def board_to_training(self, board):
         return self.board_to_grid(board), self.get_board_stats(board)
 
+    def random_move(self, board):
+        moves = list(board.legal_moves)
+        move_idx = np.random.randint(len(moves))
+        return moves[move_idx]
+
     def next_move(self, board):
+        # make a random move to explore while training
+        if self.training and np.random.uniform() < self.random_move_rate:
+            return self.random_move(board)
         self.set_color(board.turn)
         moves = list(board.legal_moves)
         board_grid_list = []
@@ -302,13 +311,13 @@ class TheGambit(Player):
         # train model
         callbacks = [
             EarlyStopping(monitor='val_loss',
-                          patience=30,
+                          patience=10,
                           restore_best_weights=True)
         ]
         self.model.fit(train_set,
                        validation_data=val_set,
                        batch_size=self.batch_size,
-                       epochs=1,
+                       epochs=100,
                        callbacks=callbacks)
 
         # log training history
@@ -321,8 +330,7 @@ class TheGambit(Player):
         self.val_mae.append(rmse_val)
         self.moves_per_game.append(num_boards / num_games / 2)
 
-        plt.plot(range(1,
-                       len(self.train_mae[1:]) + 1),
+        plt.plot(range(1, len(self.train_mae[1:])),
                  self.train_mae[1:],
                  label='Training')
         plt.plot(range(len(self.val_mae[1:])),
