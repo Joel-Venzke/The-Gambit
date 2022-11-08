@@ -26,7 +26,7 @@ num_games = 2**17
 for depth in range(1):
     chess_match = ChessMatch(the_gambit_1,
                              player_2,
-                             training_batch_size=2,
+                             training_batch_size=32,
                              verbose=1)
     chess_match.randomize_sides()
     start = time.time()

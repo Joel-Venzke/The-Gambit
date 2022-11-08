@@ -6,6 +6,7 @@ from keras.utils import plot_model
 from keras.optimizers import Adam
 from keras.callbacks import EarlyStopping
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -286,19 +287,9 @@ class TheGambit(Player):
         print('Total boards in database:', len(training_df))
         # get average result for all boards
         training_df = training_df.groupby('board').mean().reset_index()
-        training_df = training_df.sample(min(16384, len(training_df)))
 
         print(f'{self.name} is training on {len(training_df)} boards')
 
-        # convert boards in fen to model inputs
-        # records = []
-        # for idx, row in training_df.iterrows():
-        #     grid, stats = self.load_board(board.fen())
-        #     records.append({
-        #         'grid': grid,
-        #         'stats': stats,
-        #         'label': float(label)
-        #     })
         train_df, val_df = train_test_split(training_df, test_size=0.2)
         train_set = BoardLoader(np.array(list(train_df['board'].values)),
                                 np.array(list(train_df['label'].values)),
@@ -307,22 +298,6 @@ class TheGambit(Player):
         val_set = BoardLoader(np.array(list(val_df['board'].values)),
                               np.array(list(val_df['label'].values)),
                               self.batch_size, self.board_data_name)
-        # y_train = np.array(list(train_df['label'].values))
-        # x_train = [
-        #     np.array(list(train_df['grid'].values)),
-        #     np.array(list(train_df['stats'].values))
-        # ]
-        # y_val = np.array(list(val_df['label'].values))
-        # x_val = [
-        #     np.array(list(val_df['grid'].values)),
-        #     np.array(list(val_df['stats'].values))
-        # ]
-        # num_samples = len(y_train)
-        # num_draw = np.sum(y_train == 0.5)
-        # sample_weight = np.ones(shape=(len(y_train), ))
-        # sample_weight[y_train == 0.5] = min(
-        #     1,
-        #     max(1, (num_samples - num_draw)) / num_draw / 2)
 
         # train model
         callbacks = [
@@ -333,37 +308,37 @@ class TheGambit(Player):
         self.model.fit(train_set,
                        validation_data=val_set,
                        batch_size=self.batch_size,
-                       epochs=300,
+                       epochs=1,
                        callbacks=callbacks)
 
         # log training history
-        # pred_val = self.model.predict(x_train)
-        # mae = np.sqrt(np.mean((y_train - pred_val)**2))
-        # pred_val = self.model.predict(x_val)
-        # mae_val = np.sqrt(np.mean((y_val - pred_val)**2))
-        # print(f'train mae: {mae}\nval mae: {mae_val}')
-        # self.train_mae.append(mae)
-        # self.val_mae.append(mae_val)
-        # self.moves_per_game.append(num_boards / num_games / 2)
+        pred = self.model.predict(train_set)
+        rmse = np.sqrt(mean_squared_error(train_set.labels, pred))
+        pred_val = self.model.predict(val_set)
+        rmse_val = np.sqrt(mean_squared_error(val_set.labels, pred_val))
+        print(f'train rmse: {rmse}\nval rmse: {rmse_val}')
+        self.train_mae.append(rmse)
+        self.val_mae.append(rmse_val)
+        self.moves_per_game.append(num_boards / num_games / 2)
 
-        # plt.plot(range(1,
-        #                len(self.train_mae[1:]) + 1),
-        #          self.train_mae[1:],
-        #          label='Training')
-        # plt.plot(range(len(self.val_mae[1:])),
-        #          self.val_mae[1:],
-        #          label='Validation')
-        # plt.legend()
-        # plt.xlabel('trainings')
-        # plt.ylabel('MAE')
-        # plt.savefig(f'graphs/{self.name}_training_mae.png')
-        # plt.clf()
+        plt.plot(range(1,
+                       len(self.train_mae[1:]) + 1),
+                 self.train_mae[1:],
+                 label='Training')
+        plt.plot(range(len(self.val_mae[1:])),
+                 self.val_mae[1:],
+                 label='Validation')
+        plt.legend()
+        plt.xlabel('trainings')
+        plt.ylabel('RMSE')
+        plt.savefig(f'graphs/{self.name}_training_mae.png')
+        plt.clf()
 
-        # plt.plot(self.moves_per_game[1:])
-        # plt.xlabel('trainings')
-        # plt.ylabel('Moves per game')
-        # plt.savefig(f'graphs/{self.name}_moves_per_game.png')
-        # plt.clf()
+        plt.plot(self.moves_per_game[1:])
+        plt.xlabel('trainings')
+        plt.ylabel('Moves per game')
+        plt.savefig(f'graphs/{self.name}_moves_per_game.png')
+        plt.clf()
 
         # save model
         if self.total_games_trained > self.next_save_count:
