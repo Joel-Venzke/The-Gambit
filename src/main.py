@@ -7,22 +7,22 @@ import time
 
 # player_1 = Player(name='Player 1')
 # human = Human()
-the_gambit_1 = TheGambit(name='TheGambit_1',
+the_gambit_1 = TheGambit(name='TheGambitZero_0',
                          load_model=True,
                          noise_level=0.0,
                          min_noise_level=0)
-player_2 = StockfishPlayer()
-# player_2 = TheGambit(name='TheGambit_2',
-#                      load_model=True,
-#                      noise_level=0.0,
-#                      min_noise_level=0)
+# player_2 = StockfishPlayer()
+player_2 = TheGambit(name='TheGambitZero_1',
+                     load_model=True,
+                     noise_level=0.0,
+                     min_noise_level=0)
 # player_2 = Player(name='Random Player')
 
 num_games = 2**17
 for depth in range(1):
     chess_match = ChessMatch(the_gambit_1,
                              player_2,
-                             training_batch_size=128,
+                             training_batch_size=4,
                              verbose=1)
     chess_match.randomize_sides()
     start = time.time()

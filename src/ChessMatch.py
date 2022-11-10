@@ -84,6 +84,7 @@ class ChessMatch:
             print(
                 f"Game {self.game_counter} result: {result} ({self.players[0]}, {self.players[1]}) in {move_idx/2} moves"
             )
+            print(self.board.outcome(claim_draw=True))
         else:
             print(f'.', end='', flush=True)
         if result == '1-0':

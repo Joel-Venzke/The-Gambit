@@ -1,5 +1,6 @@
 from Player import Player
 import keras
+from keras import backend as K
 from keras.layers import Input, Dense, Embedding, Flatten, Reshape, concatenate, Conv2D, BatchNormalization, Dropout, Add
 from keras.models import Model
 from keras.utils import plot_model
@@ -76,13 +77,15 @@ class TheGambit(Player):
         self.model_version = 0
         self.total_games_trained = 0
         self.next_save_count = 2**10
-        self.batch_size = 8192
+        self.batch_size = 1024
         self.val_mae = []
         self.train_mae = []
         self.moves_per_game = []
         self.data_name = f'train_data/{name}.csv'
         self.board_data_name = 'boards/'
-        self.random_move_rate = 0.05
+        self.random_move_rate = .2
+        self.patience = 30
+        self.random_move_factor = 1.0
 
     def setup_training_data(self):
         board = chess.Board()
@@ -141,7 +144,7 @@ class TheGambit(Player):
         board_input = Input(shape=[8, 8], name='board_input')
         # input for
         state_input = Input(shape=[
-            5,
+            6,
         ], name='state_input')
 
         flat_board = Flatten(name='flat_board')(board_input)
@@ -154,14 +157,20 @@ class TheGambit(Player):
                      cnn_filter_shape,
                      activation=activation,
                      name=f'cnn_{0}')(cnn_board)
+        cnn = BatchNormalization(name=f'cnn_batch_norm_{0}')(cnn)
+        cnn = Dropout(dropout_rate, name=f'cnn_dropout_{0}')(cnn)
         for idx in range(1, cnn_stack_size):
             cnn = Conv2D(2**(cnn_filter_power + idx),
                          cnn_filter_shape,
                          activation=activation,
                          name=f'cnn_{idx}')(cnn)
+            cnn = BatchNormalization(name=f'cnn_batch_norm_{idx}')(cnn)
+            cnn = Dropout(dropout_rate, name=f'cnn_dropout_{idx}')(cnn)
         wide_cnn = Conv2D(2**(cnn_filter_power + cnn_stack_size), (8, 8),
                           activation=activation,
                           name=f'wide_cnn')(cnn_board)
+        wide_cnn = BatchNormalization(name=f'wide_cnn_batch_norm')(wide_cnn)
+        wide_cnn = Dropout(dropout_rate, name=f'wide_cnn_dropout')(wide_cnn)
         flatten_board_cnn = Flatten(name=f'flatten_cnn')(cnn)
         flatten_board_wide_cnn = Flatten(name=f'flatten_wide_cnn')(wide_cnn)
 
@@ -186,7 +195,6 @@ class TheGambit(Player):
     def save_model(self):
         path = f'models/{self.name}_v{self.model_version}'
         self.model.save(path)
-        self.model_version += 1
 
     def board_to_grid(self, board):
         np_board = np.zeros((8, 8), dtype=int)
@@ -203,12 +211,15 @@ class TheGambit(Player):
         return np_board
 
     def get_board_stats(self, board):
-        stats = np.zeros([5], dtype=float)
+        stats = np.zeros([6], dtype=float)
         stats[0] = board.has_kingside_castling_rights(chess.WHITE)
         stats[1] = board.has_queenside_castling_rights(chess.WHITE)
         stats[2] = board.has_kingside_castling_rights(chess.BLACK)
         stats[3] = board.has_queenside_castling_rights(chess.BLACK)
-        stats[4] = board.halfmove_clock / 50
+        stats[4] = board.halfmove_clock / 100
+        stats[5] = (int(board.is_repetition(count=1)) +
+                    int(board.is_repetition(count=2)) +
+                    int(board.can_claim_threefold_repetition())) / 3
         return stats
 
     def board_to_training(self, board):
@@ -221,7 +232,9 @@ class TheGambit(Player):
 
     def next_move(self, board):
         # make a random move to explore while training
-        if self.training and np.random.uniform() < self.random_move_rate:
+        # increase likelyhood of random moves after 50
+        if self.training and np.random.uniform() < self.random_move_rate * max(
+                1, board.fullmove_number / 50):
             return self.random_move(board)
         self.set_color(board.turn)
         moves = list(board.legal_moves)
@@ -280,8 +293,11 @@ class TheGambit(Player):
         self.total_games_trained += num_games
 
         records = []
+        non_draw_count = 0
         for board, label in training_set:
             records.append({'board': board.fen(), 'label': float(label)})
+            if label != 0.5:
+                non_draw_count += 1
             self.save_board(board)
         new_training_df = pd.DataFrame(records)
         # save new boards to records
@@ -309,15 +325,18 @@ class TheGambit(Player):
                               self.batch_size, self.board_data_name)
 
         # train model
+        learning_rate = 10 / len(training_df)
+        print(f'Learning rate is now {learning_rate}')
+        K.set_value(self.model.optimizer.learning_rate, learning_rate)
         callbacks = [
             EarlyStopping(monitor='val_loss',
-                          patience=10,
+                          patience=self.patience,
                           restore_best_weights=True)
         ]
         self.model.fit(train_set,
                        validation_data=val_set,
                        batch_size=self.batch_size,
-                       epochs=100,
+                       epochs=50,
                        callbacks=callbacks)
 
         # log training history
@@ -330,11 +349,13 @@ class TheGambit(Player):
         self.val_mae.append(rmse_val)
         self.moves_per_game.append(num_boards / num_games / 2)
 
-        plt.plot(range(1, len(self.train_mae[1:])),
-                 self.train_mae[1:],
+        plt.plot(range(len(self.train_mae)),
+                 self.train_mae,
+                 'o-',
                  label='Training')
-        plt.plot(range(len(self.val_mae[1:])),
-                 self.val_mae[1:],
+        plt.plot(range(len(self.val_mae)),
+                 self.val_mae,
+                 'o-',
                  label='Validation')
         plt.legend()
         plt.xlabel('trainings')
@@ -342,17 +363,27 @@ class TheGambit(Player):
         plt.savefig(f'graphs/{self.name}_training_mae.png')
         plt.clf()
 
-        plt.plot(self.moves_per_game[1:])
+        plt.plot(range(len(self.moves_per_game)), self.moves_per_game, 'o-')
         plt.xlabel('trainings')
         plt.ylabel('Moves per game')
         plt.savefig(f'graphs/{self.name}_moves_per_game.png')
         plt.clf()
 
         # save model
-        if self.total_games_trained > self.next_save_count:
-            self.next_save_count += 2**10
-            self.save_model()
+        self.save_model()
 
-        # reduce noise
-        self.adjust_noise_level(num_games)
-        print('Noise level:', self.noise_level)
+        # lower patience
+        self.patience -= 1
+        self.patience = max(10, self.patience)
+
+        # make more random moves if all draws
+        winning_move_rate = non_draw_count / num_boards
+        if winning_move_rate > 0.01:
+            self.random_move_factor = max(self.random_move_factor - 0.1, 0.0)
+        else:
+            self.random_move_factor = min(self.random_move_factor + 0.1, 2.0)
+        # 2 boards per whole move
+        whole_moves_per_game = (num_boards / 2) / num_games
+        # update random rate to 1 random move every 1.5 games
+        self.random_move_rate = min(0.5, (1 / whole_moves_per_game) *
+                                    self.random_move_factor)
