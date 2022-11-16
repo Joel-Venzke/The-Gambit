@@ -90,22 +90,22 @@ class ChessMatch:
         if result == '1-0':
             self.players[0].wins += 1
             self.players[1].losses += 1
-            self.training_result = 1.0
+            self.training_result = 1.0 / max(1, (move_idx / 2) - 40)
         elif result == '0-1':
             self.players[0].losses += 1
             self.players[1].wins += 1
-            self.training_result = 0.0
+            self.training_result = -1.0 / max(1, (move_idx / 2) - 40)
         elif result == '1/2-1/2':
             self.players[0].draws += 1
             self.players[1].draws += 1
-            self.training_result = 0.5
+            self.training_result = 0.0
         self.gen_training_data()
 
     def gen_training_data(self):
         save_game = False
-        if self.training_result == 1.0 or self.training_result == 0.0:
+        if self.training_result != 0.0:
             self.non_draw_game += 1
-        elif self.training_result == 0.5 and self.non_draw_game > 0:
+        elif self.training_result == 0.0 and self.non_draw_game > 0:
             self.non_draw_game -= 1
         for move_idx, board in enumerate(self.game_log):
             self.training_set.append([board, self.training_result])

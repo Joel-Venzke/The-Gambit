@@ -16,39 +16,36 @@ import glob
 
 
 class BoardLoader(keras.utils.Sequence):
-    def __init__(self, fen_list, labels, batch_size, base_file_path):
-        self.fen_list = fen_list
+    def __init__(self, board_base_list, labels, batch_size, base_file_path):
+        self.board_base_list = board_base_list
         self.labels = labels
         self.batch_size = batch_size
         self.base_file_path = base_file_path
 
     def __len__(self):
-        return (np.ceil(len(self.fen_list) / float(self.batch_size))).astype(
-            np.int)
+        return (np.ceil(len(self.board_base_list) /
+                        float(self.batch_size))).astype(np.int)
 
-    def board_to_file(self, fen):
-        return fen.replace('/', '_')
-
-    def get_board_data_files(self, fen):
-        grid_file = f'{self.base_file_path}{self.board_to_file(fen)}_grid.npy'
-        stats_file = f'{self.base_file_path}{self.board_to_file(fen)}_stats.npy'
+    def get_board_data_files(self, board_base):
+        grid_file = f'{self.base_file_path}{board_base}_grid.npy'
+        stats_file = f'{self.base_file_path}{board_base}_stats.npy'
         return grid_file, stats_file
 
-    def load_board(self, fen):
-        grid_file, stats_file = self.get_board_data_files(fen)
+    def load_board(self, board_base):
+        grid_file, stats_file = self.get_board_data_files(board_base)
         grid = np.load(grid_file)
         stats = np.load(stats_file)
         return grid, stats
 
     def __getitem__(self, idx):
-        batch_x = self.fen_list[idx * self.batch_size:(idx + 1) *
-                                self.batch_size]
+        batch_x = self.board_base_list[idx * self.batch_size:(idx + 1) *
+                                       self.batch_size]
         batch_y = self.labels[idx * self.batch_size:(idx + 1) *
                               self.batch_size]
         grid_list = []
         stats_list = []
-        for fen in batch_x:
-            grid, stats = self.load_board(fen)
+        for board_base in batch_x:
+            grid, stats = self.load_board(board_base)
             grid_list.append(grid)
             stats_list.append(stats)
         data = [np.array(grid_list), np.array(stats_list)], np.array(batch_y)
@@ -137,7 +134,7 @@ class TheGambit(Player):
         activation = "elu"
         dense_power = 6
         cnn_stack_size = 3
-        mlp_stack_size = 3
+        # mlp_stack_size = 3
         dropout_rate = 0.2
 
         # input for the 64 square chess board (embedding)
@@ -153,6 +150,8 @@ class TheGambit(Player):
                                name='embed_board')(flat_board)
         cnn_board = Reshape((8, 8, embedding_size),
                             name='cnn_board')(embeddings)
+
+        # 3,3 filter
         cnn = Conv2D(2**(cnn_filter_power),
                      cnn_filter_shape,
                      activation=activation,
@@ -166,24 +165,49 @@ class TheGambit(Player):
                          name=f'cnn_{idx}')(cnn)
             cnn = BatchNormalization(name=f'cnn_batch_norm_{idx}')(cnn)
             cnn = Dropout(dropout_rate, name=f'cnn_dropout_{idx}')(cnn)
-        wide_cnn = Conv2D(2**(cnn_filter_power + cnn_stack_size), (8, 8),
+
+        cnn = Conv2D(2**(cnn_filter_power + cnn_stack_size), (2, 2),
+                     activation=activation,
+                     name=f'cnn_{idx+1}')(cnn)
+        cnn = BatchNormalization(name=f'cnn_batch_norm_{idx+1}')(cnn)
+        cnn = Dropout(dropout_rate, name=f'cnn_dropout_{idx+1}')(cnn)
+
+        # 5,5 filter
+        cnn_5 = Conv2D(2**(cnn_filter_power), (5, 5),
+                       activation=activation,
+                       name=f'cnn_5_{0}')(cnn_board)
+        cnn_5 = BatchNormalization(name=f'cnn_5_batch_norm_{0}')(cnn_5)
+        cnn_5 = Dropout(dropout_rate, name=f'cnn_5_dropout_{0}')(cnn_5)
+        cnn_5 = Conv2D(2**(cnn_filter_power + 1), (4, 4),
+                       activation=activation,
+                       name=f'cnn_5_{2}')(cnn_5)
+        cnn_5 = BatchNormalization(name=f'cnn_5_batch_norm_{2}')(cnn_5)
+        cnn_5 = Dropout(dropout_rate, name=f'cnn_5_dropout_{2}')(cnn_5)
+
+        # 8,8 filter
+        wide_cnn = Conv2D(2**(cnn_filter_power), (8, 8),
                           activation=activation,
                           name=f'wide_cnn')(cnn_board)
         wide_cnn = BatchNormalization(name=f'wide_cnn_batch_norm')(wide_cnn)
         wide_cnn = Dropout(dropout_rate, name=f'wide_cnn_dropout')(wide_cnn)
+
         flatten_board_cnn = Flatten(name=f'flatten_cnn')(cnn)
+        flatten_board_cnn_5 = Flatten(name=f'flatten_cnn_5')(cnn_5)
         flatten_board_wide_cnn = Flatten(name=f'flatten_wide_cnn')(wide_cnn)
 
-        elu_stack = concatenate(
-            (flatten_board_wide_cnn, flatten_board_cnn, state_input),
-            name='cnn_state_merge')
-        for idx in range(mlp_stack_size):
-            elu_stack = Dense(2**(dense_power + mlp_stack_size - idx - 1),
-                              activation=activation,
-                              name=f'dense_{idx}')(elu_stack)
-            elu_stack = BatchNormalization(name=f'batch_norm_{idx}')(elu_stack)
-            elu_stack = Dropout(dropout_rate, name=f'dropout_{idx}')(elu_stack)
-        post_elu = concatenate((elu_stack, state_input), name='final_merge')
+        # elu_stack = concatenate(
+        #     (flatten_board_wide_cnn, flatten_board_cnn, state_input),
+        #     name='cnn_state_merge')
+        # for idx in range(mlp_stack_size):
+        #     elu_stack = Dense(2**(dense_power + mlp_stack_size - idx - 1),
+        #                       activation=activation,
+        #                       name=f'dense_{idx}')(elu_stack)
+        #     elu_stack = BatchNormalization(name=f'batch_norm_{idx}')(elu_stack)
+        #     elu_stack = Dropout(dropout_rate, name=f'dropout_{idx}')(elu_stack)
+        # post_elu = concatenate((elu_stack, state_input), name='final_merge')
+        post_elu = concatenate((flatten_board_wide_cnn, flatten_board_cnn_5,
+                                flatten_board_cnn, state_input),
+                               name='cnn_state_merge')
         output = Dense(1, activation="linear", name=f'output')(post_elu)
 
         model = Model(inputs=[board_input, state_input], outputs=output)
@@ -210,6 +234,11 @@ class TheGambit(Player):
                     np_board[7 - col_idx, row_idx] = value
         return np_board
 
+    def get_rep_count(self, board):
+        return int(board.is_repetition(count=1)) + int(
+            board.is_repetition(count=2)) + int(
+                board.can_claim_threefold_repetition())
+
     def get_board_stats(self, board):
         stats = np.zeros([6], dtype=float)
         stats[0] = board.has_kingside_castling_rights(chess.WHITE)
@@ -217,9 +246,7 @@ class TheGambit(Player):
         stats[2] = board.has_kingside_castling_rights(chess.BLACK)
         stats[3] = board.has_queenside_castling_rights(chess.BLACK)
         stats[4] = board.halfmove_clock / 100
-        stats[5] = (int(board.is_repetition(count=1)) +
-                    int(board.is_repetition(count=2)) +
-                    int(board.can_claim_threefold_repetition())) / 3
+        stats[5] = (self.get_rep_count(board)) / 3
         return stats
 
     def board_to_training(self, board):
@@ -234,7 +261,7 @@ class TheGambit(Player):
         # make a random move to explore while training
         # increase likelyhood of random moves after 50
         if self.training and np.random.uniform() < self.random_move_rate * max(
-                1, board.fullmove_number / 50):
+                1, board.fullmove_number / 40):
             return self.random_move(board)
         self.set_color(board.turn)
         moves = list(board.legal_moves)
@@ -268,25 +295,26 @@ class TheGambit(Player):
                                 (num_base_games - num_games) / num_base_games)
         self.noise_level = max(self.noise_level, self.min_noise_level)
 
-    def board_to_file(self, fen):
-        return fen.replace('/', '_')
+    def board_to_file(self, board):
+        # get board, color, castle rights, 50 move, and repeat count
+        # TODO: get en passant feature
+        return "_".join(
+            np.array(board.fen().replace(
+                '/', '_').split(' '))[[0, 1, 2, 4]]) + '__' + str(
+                    self.get_rep_count(board))
 
-    def get_board_data_files(self, fen):
-        grid_file = f'{self.board_data_name}{self.board_to_file(fen)}_grid.npy'
-        stats_file = f'{self.board_data_name}{self.board_to_file(fen)}_stats.npy'
-        return grid_file, stats_file
+    def get_board_data_files(self, board):
+        board_base = self.board_to_file(board)
+        grid_file = f'{self.board_data_name}{board_base}_grid.npy'
+        stats_file = f'{self.board_data_name}{board_base}_stats.npy'
+        return grid_file, stats_file, board_base
 
     def save_board(self, board):
         grid, stats = self.board_to_training(board)
-        grid_file, stats_file = self.get_board_data_files(board.fen())
+        grid_file, stats_file, board_base = self.get_board_data_files(board)
         np.save(grid_file, grid)
         np.save(stats_file, stats)
-
-    def load_board(self, fen):
-        grid_file, stats_file = self.get_board_data_files(fen)
-        grid = np.load(grid_file)
-        stats = np.load(stats_file)
-        return grid, stats
+        return board_base
 
     def fit_games(self, training_set, num_games):
         num_boards = len(training_set)
@@ -295,10 +323,10 @@ class TheGambit(Player):
         records = []
         non_draw_count = 0
         for board, label in training_set:
-            records.append({'board': board.fen(), 'label': float(label)})
-            if label != 0.5:
+            if label != 0.0:
                 non_draw_count += 1
-            self.save_board(board)
+            file_base = self.save_board(board)
+            records.append({'board': file_base, 'label': float(label)})
         new_training_df = pd.DataFrame(records)
         # save new boards to records
         new_training_df.to_csv(self.data_name,
@@ -316,6 +344,15 @@ class TheGambit(Player):
         print(f'{self.name} is training on {len(training_df)} boards')
 
         train_df, val_df = train_test_split(training_df, test_size=0.2)
+        train_draws = train_df[train_df['label'] == 0.0]
+        train_wins = train_df[train_df['label'] != 0.0]
+        num_wins = len(train_wins)
+        train_df = pd.concat([
+            train_wins,
+            train_draws.sample(
+                max(min(1000, len(train_draws)),
+                    min(num_wins * 9, len(train_draws))))
+        ]).sample(frac=1).reset_index(drop=True)
         train_set = BoardLoader(np.array(list(train_df['board'].values)),
                                 np.array(list(train_df['label'].values)),
                                 self.batch_size, self.board_data_name)
@@ -325,7 +362,8 @@ class TheGambit(Player):
                               self.batch_size, self.board_data_name)
 
         # train model
-        learning_rate = 10 / len(training_df)
+        learning_rate = 10 / len(train_df)
+        print(f'Post resampling board count: {len(train_df)}')
         print(f'Learning rate is now {learning_rate}')
         K.set_value(self.model.optimizer.learning_rate, learning_rate)
         callbacks = [
@@ -384,6 +422,6 @@ class TheGambit(Player):
             self.random_move_factor = min(self.random_move_factor + 0.1, 2.0)
         # 2 boards per whole move
         whole_moves_per_game = (num_boards / 2) / num_games
-        # update random rate to 1 random move every 1.5 games
+        # update random rate to 1 random move every random_move_factor games
         self.random_move_rate = min(0.5, (1 / whole_moves_per_game) *
                                     self.random_move_factor)
